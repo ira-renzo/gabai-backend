@@ -5,6 +5,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import List
 
+from chatterbot import ChatBot
+from chatterbot.comparisons import LevenshteinDistance
+from chatterbot.response_selection import get_first_response
 from django.core.files.uploadedfile import InMemoryUploadedFile
 from firebase_admin import db, storage
 from google.cloud.storage import Blob
@@ -66,3 +69,65 @@ def get_news_view(request: Request, news_id: str):
     data["attachments"] = attachments
 
     return Response(data)
+
+
+@api_view(['POST'])
+@parser_classes([JSONParser])
+def get_chat_view(request: Request):
+    reference = db.reference("chat").child("-NXPB7P57nHrp1mKrtn3")
+
+    if "author" not in request.data or "content" not in request.data:
+        return Response(reference.get())
+
+    messages = reference.get()
+    assert isinstance(messages, List)
+    messages.append(request.data)
+
+    content = request.data["content"].lower()
+    bot_response = gabai_bot.get_response(content)
+
+    if bot_response.confidence >= 0:
+        messages.append({"author": "Auto Mode", "content": str(bot_response)})
+        print(messages)
+
+    reference.set(messages)
+    return Response(messages)
+
+
+@api_view(['POST'])
+@parser_classes([JSONParser])
+def topic_view(request: Request):
+    reference = db.reference("topics")
+
+    if request.data == {}:
+        messages = reference.get()
+        return Response(messages)
+
+    if "conversation" in request.data:
+        conversation = request.data["conversation"]
+        reference.push(conversation)
+
+    return Response()
+
+
+gabai_bot = ChatBot(
+    "Gabai",
+    storage_adapter='chatterbot.storage.SQLStorageAdapter',
+    database_uri='sqlite:///database.sqlite3',
+    preprocessors=[
+        'chatterbot.preprocessors.clean_whitespace',
+    ],
+    logic_adapters=[
+        {
+            'import_path': 'chatterbot.logic.SpecificResponseAdapter',
+        },
+        'chatterbot.logic.MathematicalEvaluation',
+        {
+            'import_path': 'chatterbot.logic.BestMatch',
+            'default_response': 'I am sorry. I do not understand.',
+            'maximum_similarity_threshold': 0.10,
+            "statement_comparison_function": LevenshteinDistance,
+            "response_selection_method": get_first_response,
+        }
+    ]
+)
